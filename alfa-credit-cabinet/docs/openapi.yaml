@@ -1,0 +1,364 @@
+openapi: 3.1.0
+info:
+  title: Умный кредитный кабинет предпринимателя
+  version: 1.0.0
+  description: >
+    API прототипа цифрового кредитного конвейера для малого и микробизнеса.
+    Все данные синтетические. Актуальная схема также доступна на работающем сервисе:
+    /api/openapi.json и интерактивно /api/docs.
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: auth
+  - name: catalog
+  - name: applications
+  - name: bank
+  - name: service
+security:
+  - bearerAuth: []
+paths:
+  /api/health:
+    get:
+      tags: [service]
+      summary: Проверка работоспособности
+      security: []
+      responses:
+        "200": { description: OK }
+  /api/demo/companies:
+    get:
+      tags: [service]
+      summary: Тестовые компании и ожидаемые исходы
+      security: []
+      responses:
+        "200": { description: Список тестовых ИНН }
+  /api/meta/transitions:
+    get:
+      tags: [service]
+      summary: Допустимые переходы автомата статусов
+      security: []
+      responses:
+        "200": { description: Карта статус → допустимые следующие статусы }
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: Вход
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Login" }
+      responses:
+        "200":
+          description: Токен и пользователь
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "401": { description: Неверная почта или пароль }
+  /api/me:
+    get:
+      tags: [auth]
+      summary: Текущий пользователь
+      responses:
+        "200": { description: Пользователь }
+        "401": { description: Нужно войти }
+  /api/products:
+    get:
+      tags: [catalog]
+      summary: Каталог кредитных продуктов
+      responses:
+        "200": { description: Продукты }
+  /api/companies/lookup:
+    get:
+      tags: [catalog]
+      summary: Данные компании по ИНН (ЕГРЮЛ/ЕГРИП, мок)
+      parameters:
+        - { name: inn, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Данные компании }
+        "404": { description: Компания не найдена }
+        "504": { description: Сервис не ответил }
+  /api/applications:
+    post:
+      tags: [applications]
+      summary: Создать черновик заявки
+      description: Только роль client.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationInput" }
+      responses:
+        "201":
+          description: Созданная заявка
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Application" }
+        "403": { description: Недостаточно прав }
+        "422": { description: Ошибка в данных }
+    get:
+      tags: [applications]
+      summary: Список заявок
+      description: Клиент видит свои заявки, сотрудники банка — все.
+      parameters:
+        - name: queue
+          in: query
+          schema: { type: string, enum: [all, intake, review], default: all }
+      responses:
+        "200":
+          description: Заявки
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Application" }
+  /api/applications/{appId}:
+    parameters:
+      - { name: appId, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [applications]
+      summary: Карточка заявки
+      description: Сотрудникам банка дополнительно возвращаются проверки и скоринг.
+      responses:
+        "200":
+          description: Заявка
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Application" }
+        "404": { description: Заявка не найдена }
+    put:
+      tags: [applications]
+      summary: Изменить черновик или дополнить заявку
+      description: Допустимо в статусах draft и needs_data.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationInput" }
+      responses:
+        "200": { description: Обновлённая заявка }
+        "409": { description: Заявку в этом статусе менять нельзя }
+  /api/applications/{appId}/submit:
+    post:
+      tags: [applications]
+      summary: Отправить заявку в банк
+      description: Идемпотентно. Запускает конвейер обработки в фоне.
+      parameters:
+        - { name: appId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Заявка }
+        "422": { description: Сумма или срок вне пределов продукта }
+  /api/applications/{appId}/documents:
+    post:
+      tags: [applications]
+      summary: Зафиксировать приложенный документ (метаданные)
+      parameters:
+        - { name: appId, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doc_type, filename]
+              properties:
+                doc_type: { type: string }
+                filename: { type: string }
+      responses:
+        "201": { description: Заявка с документами }
+  /api/applications/{appId}/withdraw:
+    post:
+      tags: [applications]
+      summary: Отозвать заявку
+      parameters:
+        - { name: appId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Заявка }
+        "409": { description: Переход недопустим }
+  /api/applications/{appId}/accept-offer:
+    post:
+      tags: [applications]
+      summary: Принять оферту
+      parameters:
+        - { name: appId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Заявка в статусе offer_accepted }
+        "409": { description: Нет оферты, которую можно принять }
+  /api/applications/{appId}/sign:
+    post:
+      tags: [applications]
+      summary: Подписать договор (подписание и выдача моделируются)
+      parameters:
+        - { name: appId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Заявка в статусе disbursed }
+        "409": { description: Переход недопустим }
+  /api/applications/{appId}/request-data:
+    post:
+      tags: [bank]
+      summary: Запросить у клиента данные
+      description: Роли operator и analyst; статусы checking и manual_review.
+      parameters:
+        - { name: appId, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [comment]
+              properties:
+                comment: { type: string }
+      responses:
+        "200": { description: Заявка в статусе needs_data }
+  /api/applications/{appId}/decision:
+    post:
+      tags: [bank]
+      summary: Решение аналитика по заявке из ручного разбора
+      description: Только роль analyst. Причина обязательна.
+      parameters:
+        - { name: appId, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionInput" }
+      responses:
+        "200": { description: Заявка с принятым решением }
+        "409": { description: Заявка не в ручном разборе }
+        "422": { description: Нет причины или недопустимые условия }
+  /api/admin/stats:
+    get:
+      tags: [bank]
+      summary: Загрузка очередей и воронка по статусам
+      responses:
+        "200": { description: Количество заявок по статусам }
+  /api/admin/audit:
+    get:
+      tags: [bank]
+      summary: Журнал аудита
+      description: Только роль admin.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        "200": { description: Записи журнала }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Login:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string }
+        password: { type: string }
+    LoginResult:
+      type: object
+      properties:
+        token: { type: string }
+        user:
+          type: object
+          properties:
+            id: { type: integer }
+            name: { type: string }
+            email: { type: string }
+            role: { type: string, enum: [client, operator, analyst, admin] }
+    ApplicationInput:
+      type: object
+      properties:
+        product_code: { type: string, enum: [working_capital, investment, overdraft] }
+        inn: { type: string, description: 10 или 12 цифр }
+        company_name: { type: string }
+        amount: { type: integer, minimum: 1 }
+        term_months: { type: integer, minimum: 1 }
+        purpose: { type: string }
+        revenue: { type: integer, minimum: 0 }
+        revenue_prev: { type: integer, minimum: 0 }
+    DecisionInput:
+      type: object
+      required: [outcome, reason]
+      properties:
+        outcome: { type: string, enum: [approved, counter_offer, rejected] }
+        reason: { type: string }
+        amount: { type: integer, nullable: true }
+        rate: { type: number, nullable: true }
+    Application:
+      type: object
+      properties:
+        id: { type: integer }
+        status:
+          type: string
+          enum: [draft, submitted, checking, enrichment, scoring, decision, approved, counter_offer,
+                 needs_data, manual_review, rejected, offer_accepted, signed, disbursed, withdrawn, expired]
+        status_label: { type: string }
+        next_step: { type: string, description: Подсказка клиенту, что делать дальше }
+        product_code: { type: string }
+        product_name: { type: string }
+        inn: { type: string }
+        company_name: { type: string }
+        amount: { type: integer }
+        term_months: { type: integer }
+        purpose: { type: string }
+        revenue: { type: integer }
+        revenue_prev: { type: integer }
+        missing:
+          type: array
+          items: { type: string }
+        reasons:
+          type: array
+          items: { type: string }
+        offer:
+          type: object
+          nullable: true
+          properties:
+            amount: { type: integer }
+            term_months: { type: integer }
+            rate: { type: number }
+            status: { type: string, enum: [pending, accepted] }
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              from_status: { type: string, nullable: true }
+              to_status: { type: string }
+              to_label: { type: string }
+              actor: { type: string }
+              reason: { type: string, nullable: true }
+              at: { type: string, format: date-time }
+        checks:
+          type: array
+          description: Только для сотрудников банка
+          items:
+            type: object
+            properties:
+              source: { type: string, enum: [egrul, fns, bki] }
+              status: { type: string, enum: [ok, timeout, not_found] }
+              attempts: { type: integer }
+        scoring:
+          type: object
+          nullable: true
+          description: Только для сотрудников банка
+          properties:
+            score: { type: integer, minimum: 0, maximum: 100 }
+            klass: { type: string, enum: [A, B, C, D] }
+            factors:
+              type: array
+              items:
+                type: object
+                properties:
+                  key: { type: string }
+                  label: { type: string }
+                  points: { type: integer }
+                  max: { type: integer }
+                  note: { type: string }
+            stop_factors:
+              type: array
+              items:
+                type: object
+                properties:
+                  code: { type: string }
+                  text: { type: string }

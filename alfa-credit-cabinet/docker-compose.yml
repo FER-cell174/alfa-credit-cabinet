@@ -1,0 +1,58 @@
+# Запуск всего решения одной командой: docker compose up --build
+# Интерфейс: http://localhost:8080   API (Swagger): http://localhost:8080/api/docs  (см. README)
+services:
+  db:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_USER: credit
+      POSTGRES_PASSWORD: credit
+      POSTGRES_DB: credit
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U credit -d credit"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  mocks:
+    build: ./backend
+    command: ["uvicorn", "app.mock_service:app", "--host", "0.0.0.0", "--port", "8001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://credit:credit@db:5432/credit
+      MOCKS_URL: http://mocks:8001
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      SEED_ON_START: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+      mocks:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  dbdata:
